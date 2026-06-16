@@ -1,0 +1,95 @@
+openapi: 3.0.3
+
+info:
+  title: TaskFlow — API Gateway
+  version: 1.0.0
+  description: >-
+    Ponto único de entrada do TaskFlow. Roteia chamadas /api/* para o BFF via
+    integração HTTP_PROXY, preservando método, caminho, query string e cabeçalhos.
+
+x-amazon-apigateway-cors:
+  allowOrigins:
+    - http://localhost:3000
+  allowMethods:
+    - GET
+    - POST
+    - PUT
+    - PATCH
+    - DELETE
+    - OPTIONS
+  allowHeaders:
+    - authorization
+    - content-type
+    - x-correlation-id
+  exposeHeaders:
+    - x-correlation-id
+  maxAge: 86400
+
+paths:
+  /api/{proxy+}:
+    x-amazon-apigateway-any-method:
+      operationId: proxyToBff
+      summary: Encaminha qualquer requisição /api/* para o BFF
+      description: >-
+        Rota única que repassa a requisição ao BFF. O gateway não transforma
+        payloads nem contém regra de negócio.
+      parameters:
+        - name: proxy
+          in: path
+          required: true
+          description: Restante do caminho repassado ao BFF.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Resposta repassada do BFF.
+        "4XX":
+          description: Erro de cliente retornado pelo BFF ou pelo gateway.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "5XX":
+          description: Erro inesperado retornado pelo BFF ou pelo gateway.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+      x-amazon-apigateway-integration:
+        type: HTTP_PROXY
+        httpMethod: ANY
+        uri: "https://taskflow-bff.example.com/{proxy}"
+        payloadFormatVersion: "1.0"
+        connectionType: INTERNET
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT emitido pelo User Service.
+
+  schemas:
+    Error:
+      type: object
+      description: Envelope de erro padronizado.
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        path:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string

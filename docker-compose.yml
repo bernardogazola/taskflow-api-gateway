@@ -1,0 +1,145 @@
+# Stack local completa do TaskFlow.
+# Neste ambiente, o navegador chama o BFF diretamente em http://localhost:8080.
+# O API Gateway é usado apenas no ambiente de nuvem.
+
+services:
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: taskflow-mssql
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD:-Your_strong_Pass123}"
+    ports:
+      - "1433:1433"
+
+  mongo:
+    image: mongo:7
+    container_name: taskflow-mongo
+    ports:
+      - "27017:27017"
+
+  sb-sqledge:
+    image: mcr.microsoft.com/azure-sql-edge:latest
+    container_name: taskflow-sb-sqledge
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD:-Your_strong_Pass123}"
+
+  servicebus-emulator:
+    image: mcr.microsoft.com/azure-messaging/servicebus-emulator:latest
+    container_name: taskflow-servicebus-emulator
+    volumes:
+      - ./servicebus-emulator/config.json:/ServiceBus_Emulator/ConfigFiles/Config.json:ro
+    ports:
+      - "5672:5672"
+    environment:
+      SQL_SERVER: sb-sqledge
+      MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD:-Your_strong_Pass123}"
+      ACCEPT_EULA: "Y"
+    depends_on:
+      - sb-sqledge
+
+  user-service:
+    build:
+      context: ../taskflow-user-service
+      dockerfile: src/main/docker/Dockerfile.jvm
+    container_name: taskflow-user-service
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      AZURE_SQL_JDBC_URL: "jdbc:sqlserver://mssql:1433;databaseName=taskflow;encrypt=false;trustServerCertificate=true"
+      AZURE_SQL_USER: "${AZURE_SQL_USER:-sa}"
+      AZURE_SQL_PASSWORD: "${MSSQL_SA_PASSWORD:-Your_strong_Pass123}"
+      SERVICEBUS_CONNECTION_STRING: "${SERVICEBUS_CONNECTION_STRING:-Endpoint=sb://servicebus-emulator;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;}"
+      SERVICEBUS_TOPIC: task-events
+      SERVICEBUS_SUBSCRIPTION: user-notifications
+    ports:
+      - "8081:8080"
+    depends_on:
+      - mssql
+      - servicebus-emulator
+
+  task-service:
+    build:
+      context: ../taskflow-task-service
+      dockerfile: src/main/docker/Dockerfile.jvm
+    container_name: taskflow-task-service
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MONGODB_CONNECTION_STRING: "mongodb://mongo:27017"
+      MONGODB_DATABASE: taskflow
+      SERVICEBUS_CONNECTION_STRING: "${SERVICEBUS_CONNECTION_STRING:-Endpoint=sb://servicebus-emulator;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;}"
+      SERVICEBUS_TOPIC: task-events
+      SERVICEBUS_SUBSCRIPTION: user-notifications
+    ports:
+      - "8082:8080"
+    depends_on:
+      - mongo
+      - servicebus-emulator
+
+  enrichment:
+    build:
+      context: ../taskflow-enrichment-function
+      dockerfile: src/main/docker/Dockerfile.jvm
+    container_name: taskflow-enrichment
+    ports:
+      - "8083:8080"
+
+  bff:
+    build:
+      context: ../taskflow-bff
+      dockerfile: src/main/docker/Dockerfile.jvm
+    container_name: taskflow-bff
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      USER_SERVICE_URL: "http://user-service:8080"
+      TASK_SERVICE_URL: "http://task-service:8080"
+      ENRICHMENT_FUNCTION_URL: "http://enrichment:8080"
+      CORS_ORIGINS: "http://localhost:3000"
+    ports:
+      - "8080:8080"
+    depends_on:
+      - user-service
+      - task-service
+      - enrichment
+
+  shell:
+    build:
+      context: ../taskflow-frontend
+      dockerfile: Dockerfile.shell
+      args:
+        VITE_API_BASE_URL: "http://localhost:8080"
+        VITE_TASKS_REMOTE: "http://localhost:3001"
+        VITE_DASHBOARD_REMOTE: "http://localhost:3002"
+    container_name: taskflow-shell
+    ports:
+      - "3000:80"
+    depends_on:
+      - tasks
+      - dashboard
+      - bff
+
+  tasks:
+    build:
+      context: ../taskflow-frontend
+      dockerfile: Dockerfile.tasks
+      args:
+        VITE_API_BASE_URL: "http://localhost:8080"
+    container_name: taskflow-tasks
+    ports:
+      - "3001:80"
+
+  dashboard:
+    build:
+      context: ../taskflow-frontend
+      dockerfile: Dockerfile.dashboard
+      args:
+        VITE_API_BASE_URL: "http://localhost:8080"
+    container_name: taskflow-dashboard
+    ports:
+      - "3002:80"
